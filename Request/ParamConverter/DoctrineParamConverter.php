@@ -45,24 +45,33 @@ class DoctrineParamConverter implements ParamConverterInterface
         $name = $configuration->getName();
         $class = $configuration->getClass();
         $options = $this->getOptions($configuration);
+        $options['strip_null'] = true;
 
         if (null === $request->attributes->get($name, false)) {
             $configuration->setIsOptional(true);
         }
 
-        // find by identifier?
-        if (false === $object = $this->find($class, $request, $options, $name)) {
-            // find by criteria
-            if (false === $object = $this->findOneBy($class, $request, $options)) {
-                if ($configuration->isOptional()) {
+        $object = null;
+        $notFound = false;
+        try {
+            // find by identifier?
+            if (false === $object = $this->find($class, $request, $options, $name)) {
+                // find by criteria
+                if (false === $object = $this->findOneBy($class, $request, $options)) {
+                    if (!$configuration->isOptional()) {
+                        throw new \LogicException('Unable to guess how to get a Doctrine instance from the request information.');
+                    }
                     $object = null;
-                } else {
-                    throw new \LogicException('Unable to guess how to get a Doctrine instance from the request information.');
                 }
             }
+            if (null === $object && false === $configuration->isOptional()) {
+                $notFound = true;
+            }
+        } catch (NoResultException $e) {
+            $notFound = true;
         }
 
-        if (null === $object && false === $configuration->isOptional()) {
+        if ($notFound) {
             throw new NotFoundHttpException(sprintf('%s object not found.', $class));
         }
 
@@ -89,11 +98,12 @@ class DoctrineParamConverter implements ParamConverterInterface
             $method = 'find';
         }
 
-        try {
-            return $this->getManager($options['entity_manager'], $class)->getRepository($class)->$method($id);
-        } catch (NoResultException $e) {
-            return;
+        $entity = $this->getManager($options['entity_manager'], $class)->getRepository($class)->$method($id);
+        if (null === $entity) {
+            throw new NoResultException();
         }
+        
+        return $entity;
     }
 
     protected function getIdentifier(Request $request, $options, $name)
@@ -176,15 +186,16 @@ class DoctrineParamConverter implements ParamConverterInterface
             $repositoryMethod = 'findOneBy';
         }
 
-        try {
-            if ($mapMethodSignature) {
-                return $this->findDataByMapMethodSignature($em, $class, $repositoryMethod, $criteria);
-            }
-
-            return $em->getRepository($class)->$repositoryMethod($criteria);
-        } catch (NoResultException $e) {
-            return;
+        if ($mapMethodSignature) {
+            return $this->findDataByMapMethodSignature($em, $class, $repositoryMethod, $criteria);
         }
+
+        $entity = $em->getRepository($class)->$repositoryMethod($criteria);
+        if (null === $entity) {
+            throw new NoResultException();
+        }
+        
+        return $entity;
     }
 
     private function findDataByMapMethodSignature($em, $class, $repositoryMethod, $criteria)
